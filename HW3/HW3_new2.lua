@@ -6,28 +6,44 @@ require("optim")
 cmd = torch.CmdLine()
 
 -- Cmd Args
-cmd:option('-datafile', '', 'data file')
+cmd:option('-datafile', 'PTB.hdf5', 'data file')
 cmd:option('-lm', 'kn', 'classifier to use')
-cmd:option('-smooth', 0, 'smoothing parameter (alpha if clf = Laplace, D if clf = kn')
+cmd:option('-epochs', 20, 'number of training epochs')
+cmd:option('-bsize', 32, 'batch size')
 
 -- Hyperparameters
--- ...
+cmd:option('-smooth', 0, 'smoothing parameter (alpha if clf = Laplace, D if clf = kn')
+cmd:option('-din', 30, 'dimension of word embedding')
+cmd:option('-dhid', 300, 'dimension of hidden layer')
+cmd:option('-lambda', 0.1, 'learning rate')
 
 -- Utility functions
-function contToIdx(c, nclasses, contextSize)
-	-- All indices besides (i-1) start at 0; (i-1) starts at 1
-	local idx = 0
-	for i = 1, contextSize do
-		if i < contextSize then
-			idx = idx + (c[i]-1) * nclasses^(contextSize - i)
+function makeIndex(indices, start, fin)
+	local n = indices:size()[1]
+	local index = {}
+	for i = 1, n do
+		if i < start or i > fin then
+			index[i] = {}
 		else
-			idx = idx + c[i]
+			index[i] = indices[i]
 		end
 	end
-	return idx
+	return index
 end
 
-function normalize(F, n, clf, D)
+function wb(F, i, indices)
+	local n = indices:size()
+	if i > 1 then
+		local Fsum = F[makeIndex(indices, n-i+1, n-1)]:sum()
+		local Nsum = F[makeIndex(indices, n-i+1, n-1)]:gt(0):sum()
+		return (F[makeIndex(indices, n-i+1, n)] + Nsum * wb(F, i-1, indices)) / (Fsum + Nsum)
+	else
+		return F[makeIndex(indices, n, n)] / F:sum()
+	end
+end
+
+function normalize(F, clf, D)
+	local n = F:size():size()
 	indices[n] = indices[n] + 1
 	for i = n, 1, -1 do
 		if indices[i] > nclasses then
@@ -37,21 +53,16 @@ function normalize(F, n, clf, D)
 	end
 	print(indices)
 	indexSum = F[torch.totable(indices[{{1,n-1}}])]:sum()
-	if clf == 'laplace' or clf == 'ml' then
-		if indexSum > 0 then
+	if indexSum > 0 then
+		if clf == 'laplace' or clf == 'ml' then
 			return function() return F[torch.totable(indices)] / indexSum end
+		elseif clf == 'kn' then
+			return function() return (math.max(F[makeIndex(indices, 1, n)] - D, 0) + D * F[makeIndex(indices, 1, n-1)]:gt(0):sum() * F[makeIndex(indices, 2, n)]:gt(0):sum() / F[makeIndex(indices, 2, n-1)]:gt(0):sum()) / indexSum end
 		else
-			return function() return 0 end
-		end
-	elseif clf == 'kn' then
-		if indexSum > 0 then
-			return function() return (math.max(F[torch.totable(indices)] - D, 0) + D * F[torch.totable(indices[{{1,n-1}}])]:gt(0):sum() * F[torch.totable(indices[{{2,n}}])]:gt(0):sum()) / F[torch.totable(indices[{{2,n-1}}])]:gt(0):sum()) / indexSum end
-		else
-			return function() return 0 end
+			return function() return wb(F, n, indices) end
 		end
 	else
-		if indexSum > 0 then
-			return function() return F[torch.totable(indices) + F[torch.totable(indices[{{1,n-1}}])]:gt(0):sum()] *
+		return function() return 0 end
 	end
 end
 
@@ -74,9 +85,40 @@ function CountBased(train_input, train_output, clf, alpha, D)
 	W:apply(normalize(F, clf, D))
 end
 
-function KneserNey(train_input, train_output)
+function NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lambda)
+	local nsamples, contextSize = train_input:size()[1], train_input:size()[2]
 
-function NNLM()
+	-- Initialize network
+	local net = nn.Sequential()
+	net:add(nn.LookupTable(nclasses, din)):add(nn.Reshape(din*contextSize, true)):add(nn.Linear(contextSize*din, dhid)):add(nn.Tanh()):add(nn.Linear(dhid, nclasses)):add(nn.LogSoftMax())
+	local criterion = nn.ClassNLLCriterion()
+
+	-- SGD training
+	for t = 1, epochs do
+		-- Create minibatches
+		local train_input_mb = torch.LongTensor(bsize, contextSize)
+		local train_output_mb = torch.LongTensor(bsize)
+		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}] -- sample batch-size random examples
+
+		for i = 1, bsize do
+			train_input_mb[i] = train_input[mb_idx[i]]
+			train_output_mb[i] = train_output[mb_idx[i]]
+		end
+
+		-- Manual SGD
+		criterion:forward(net:forward(train_input_mb), train_output_mb)
+		net:zeroGradParameters()
+		net:backward(train_input_mb, criterion:backward(net.output, train_output_mb))
+		net:updateParameters(lambda)
+
+		-- Compute performance on development set
+		devPred = net:forward(valid_input)
+		devLoss = criterion:forward(devPred, valid_output)
+		print("The loss on the validation set is: " .. devLoss)
+		maxPred, maxIdx = torch.max(devPred, 2)
+		devAcc = torch.eq(maxIdx, valid_output):sum() / valid_output:size()[1]
+		print("The accuracy on the validation set is: " .. devAcc)
+	end
 end
 
 function NCE_manual(train_input, train_output, din, dhid, epochs, bsize, k)
@@ -214,8 +256,18 @@ function main()
 	local nclasses = f:read('nclasses'):all():long()[1]
 	local n = f:read('n'):all():long()[1]
 	local clf = opt.lm
-	local alpha = opt.alpha
-	local D = opt.D
+	local epochs = opt.epochs
+	local bsize = opt.bsize
+
+	-- Parse hyperparameters
+	if clf == 'laplace' then
+		local alpha = opt.smooth
+	elseif clf == 'kn' then
+		local D = opt.smooth
+	end
+	local din = opt.din
+	local dhid = opt.dhid
+	local lambda = opt.lambda
 
 	local dims = torch.LongStorage(n):fill(nclasses)
 	W = torch.DoubleTensor(dims)
@@ -225,17 +277,17 @@ function main()
     local train_output = f:read('train_output'):all():long()
 
     -- Load development data
-    valid_input_word_windows = f:read('valid_input_word_windows'):all():long()
-    valid_input_cap_windows = f:read('valid_input_cap_windows'):all():long()
-    valid_input = torch.DoubleTensor(valid_input_word_windows:size()[1],dwin,2)
-	valid_input[{{},{},1}] = valid_input_word_windows
-	valid_input[{{},{},2}] = valid_input_cap_windows
+    valid_input = f:read('valid_input'):all():long()
 	valid_output = f:read('valid_output'):all():long()
 
     -- Train.
     if clf == 'laplace' or clf == 'ml' or clf == 'kn' then
    		CountBased(train_input, train_output, clf, alpha, D)
-   	elseif clf == 'kn'
+   	elseif clf == 'nnlm' then
+   		NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lambda)
+   	else
+   		NCE()
+   	end
 
     -- Test.
 end
