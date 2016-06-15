@@ -10,6 +10,7 @@ cmd:option('-datafile', 'PTB.hdf5', 'data file')
 cmd:option('-lm', 'kn', 'classifier to use')
 cmd:option('-epochs', 20, 'number of training epochs')
 cmd:option('-bsize', 32, 'batch size')
+cmd:option('-k', 10, 'noise sample size')
 
 -- Hyperparameters
 cmd:option('-smooth', 0, 'smoothing parameter (alpha if clf = Laplace, D if clf = kn')
@@ -121,9 +122,11 @@ function NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lam
 	end
 end
 
-function NCE_manual(train_input, train_output, din, dhid, epochs, bsize, k)
+function NCE_manual(train_input, train_output, nclasses, din, dhid, epochs, bsize, k, lambda)
+	local nsamples, dwin = train_input:size()[1], train_input:size()[2]
+
 	-- Compute unigram probabilities for noise distribution
-	local unigram_probs = torch.LongTensor(nclasses)
+	local unigram_probs = torch.DoubleTensor(nclasses)
 	for i = 1, nsamples do unigram_probs[train_output[i]] = unigram_probs[train_output[i]] + 1 end
 	local totalCounts = unigram_probs:sum()
 	unigram_probs:apply(function(x) return(x / totalCounts) end)
@@ -134,9 +137,11 @@ function NCE_manual(train_input, train_output, din, dhid, epochs, bsize, k)
 
 	-- Train network
 	for t = 1, epochs do
+		print(t)
+		
 		-- Create minibatches
-		local train_input_mb = torch.LongTensor(bsize)
-		local train_output_mb = torch.DoubleTensor(bsize)
+		local train_input_mb = torch.LongTensor(bsize, dwin)
+		local train_output_mb = torch.LongTensor(bsize)
 		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}]
 		for i = 1, bsize do
 			train_input_mb[i] = train_input[mb_idx[i]]
@@ -147,33 +152,38 @@ function NCE_manual(train_input, train_output, din, dhid, epochs, bsize, k)
 		local noise_indices = torch.randperm(nsamples)[{{1,k}}]
 		local noise_samples = torch.LongTensor(k)
 		for j = 1, k do noise_samples[j] = train_output[noise_indices[j]] end
-		local all_samples = torch.concat(train_output_mb, noise_samples)
+		local all_samples = torch.cat(train_output_mb, noise_samples)
 
 		-- Manual SGD
 		local pred = net:forward(train_input_mb) -- z_score for all nclasses
 
 		-- Compute derivative of loss wrt output
-		local derivs = torch.DoubleTensor(nclasses):fill(0)
+		local derivs = torch.DoubleTensor(bsize, nclasses):fill(0)
 
-		for i = 1, nclasses do
-			if train_output_mb:eq(i):sum() > 0 then -- i.e. if i is one of the true samples
-				derivs[i] = derivs[i] + (1 - torch.sigmoid(pred[i] - torch.log(k * unigram_probs[i])))
-			elseif noise_samples:eq(i):sum() > 0 then -- i is one of noise samples
-				derivs[i] = derivs[i] - torch.sigmoid(pred[i] - torch.log(k * unigram_probs[i]))
+		for i = 1, bsize do
+			local wordidx = all_samples[i]
+			derivs[i][wordidx] = derivs[i][wordidx] + (1 - torch.sigmoid(pred[i][wordidx] - torch.log(k * unigram_probs[wordidx])))
+			for j = 1, k do
+				local noiseidx = all_samples[bsize + j]
+				derivs[i][noiseidx] = derivs[i][noiseidx] - torch.sigmoid(pred[i][noiseidx] - torch.log(k * unigram_probs[noiseidx]))
 			end
 		end
+
 		net:zeroGradParameters()
-		net:backward(train_input, derivs)
+		net:backward(train_input_mb, derivs)
 		net:updateParameters(lambda)
 	end
+
+	return net
 end
 
-function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
+function NCE_network(train_input, train_output, nclasses, din, dhid, epochs, bsize, k, lambda)
+	local nsamples, dwin = train_input:size()[1], train_input:size()[2]
 	-- Compute unigram probabilities for NCE computation
-	local unigram_probs = torch.LongTensor(nclasses)
+	local unigram_probs = torch.DoubleTensor(nclasses)
 	for i = 1, nsamples do unigram_probs[train_output[i]] = unigram_probs[train_output[i]] + 1 end
-	local totalCounts = unigram_probs:sum()
-	unigram_probs:apply(function(x) return(x / totalCounts) end)
+	local total_counts = unigram_probs:sum()
+	unigram_probs:apply(function(x) return(x / total_counts) end)
 
 	-- Initialize network
 	local net = nn.Sequential()
@@ -186,17 +196,14 @@ function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
 	nce:add(nn.LookupTable(nclasses, din)):add(nn.Reshape(din * dwin, true)):add(nn.Linear(din * dwin, dhid)):add(nn.Tanh())
 	local sublinear = nn.Linear(dhid, 32 + k)
 	nce:add(sublinear)
-
-	-- Initialize loss criterion network
-	local loss_net = nn.Sequential()
-	local add_k_prob = nn.Add(bsize + k, true)
-	loss_net:add(add_k_prob):add(nn.Sigmoid())
-
+	local criterion = nn.ClassNLLCriterion()
 
 	-- Train network
 	for t = 1, epochs do
+		print(t)
+
 		-- Create minibatches
-		local train_input_mb = torch.LongTensor(bsize)
+		local train_input_mb = torch.LongTensor(bsize, dwin)
 		local train_output_mb = torch.LongTensor(bsize)
 		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}]
 
@@ -221,19 +228,24 @@ function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
 		local pred = nce:forward(train_input_mb)
 
 		-- Compute sigmoid functions for NCE; fill into NLL; compute loss derivatives
-		local derivs = torch.DoubleTensor(bsize + k):fill(0)
-		local all_samples = torch.cat(train_output_mb, noise_samples)
+		local derivs = torch.DoubleTensor(bsize, bsize + k):fill(0)
+		local all_samples = torch.DoubleTensor(bsize + k) --???
+		for i = 1, bsize + k do all_samples[i] = i end -- ???
 		for i = 1, bsize do
 			pred[i]:map(all_samples, function(z, w)
 				return torch.sigmoid(z - torch.log(k*unigram_probs[w]))
 			end)
-			local criterion = nn.ClassNLLCriterion()
+			print(torch.max(all_samples))
 			criterion:forward(pred[i], all_samples)
-			derivs = derivs + (1/bsize) * criterion:backward(pred[i], all_samples)
+			derivs[i] = criterion:backward(pred[i], all_samples)
 		end
 
+		print(torch.max(derivs))
+
 		-- Backpropagate
+		nce:zeroGradParameters()
 		nce:backward(train_input_mb, derivs)
+		nce:updateParameters(lambda)
 
 		-- Transfer weights back to main NN
 		for i = 1, bsize do
@@ -258,6 +270,7 @@ function main()
 	local clf = opt.lm
 	local epochs = opt.epochs
 	local bsize = opt.bsize
+	local k = opt.k
 
 	-- Parse hyperparameters
 	if clf == 'laplace' then
@@ -286,10 +299,14 @@ function main()
    	elseif clf == 'nnlm' then
    		NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lambda)
    	else
-   		NCE()
+   		net = NCE_manual(train_input, train_output, nclasses, din, dhid, epochs, bsize, k, lambda)
    	end
 
     -- Test.
+		LTweights = net:get(1).weight
+		local myFile = hdf5.open('LT_weights.hdf5', 'w')
+		myFile:write('weights', LTweights)
+		myFile:close()
 end
 
 main()

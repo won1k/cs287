@@ -56,17 +56,23 @@ def convert_test_data(data_name, word_to_idx, n):
     with open(data_name, 'r') as f:
         for line in f:
             words = line.strip().split(' ') # remove 'C'/'Q' labels and last blank
+            idxs = []
+            for word in words:
+                try:
+                    idxs.append(word_to_idx[word])
+                except:
+                    idxs.append(unk)
             if words[0] == 'C':
-                words = words[1:-1] # remove 'C'/'Q' labels and last blank
-                contLen = len(words)
+                idxs = idxs[1:-1] # remove 'C'/'Q' labels and last blank
+                contLen = len(idxs)
                 if contLen < n - 1:
-                    context = [start] * ((n-1) - contLen) + [word_to_idx[word] for word in words]
+                    context = [start] * ((n-1) - contLen) + idxs
                 else:
-                    context = [word_to_idx[word] for word in words][-(n-1):]
+                    context = idxs[-(n-1):]
                 contexts.append(context)
             else:
-                words = words[1:]
-                candidates.append([word_to_idx[word] for word in words])
+                idxs = idxs[1:]
+                candidates.append(idxs)
     return np.array(contexts, dtype = np.int32), np.array(candidates, dtype = np.int32)
 
 
@@ -75,7 +81,7 @@ FILE_PATHS = {"PTB": ("data/train.txt",
                       "data/test_blanks.txt",
                       "data/words.dict"),
             "PTB1000": ("data/train.1000.txt",
-                      "data/dev.1000.txt",
+                      "data/valid.1000.txt",
                       "data/test_blanks.txt",
                       "data/words.1000.dict")}
 args = {}
@@ -96,6 +102,7 @@ def main(arguments):
 
     # Get word dict
     word_to_idx = get_vocab(word_dict)
+    idx_to_word = dict((idx,word) for word,idx in word_to_idx.iteritems())
     nclasses = len(word_to_idx.keys())
 
     # Convert data with n-gram windows
