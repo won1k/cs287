@@ -115,7 +115,7 @@ function LR(train_input, train_output, W, b, batchSize, stepSize, epochs, lambda
 	end
 end
 
-function SVM(train_input, train_output, W, b, batchSize, stepSize epochs, lambda)
+function SVM(train_input, train_output, W, b, batchSize, stepSize, epochs, lambda)
 
 	local nclasses, nfeatures = W:size()[1], W:size()[2]
 	local n, maxSentLen = train_input:size()[1], train_input:size()[2]

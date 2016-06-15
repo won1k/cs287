@@ -1,5 +1,6 @@
 -- Only requirement allowed
 require("hdf5")
+require("rnn")
 
 cmd = torch.CmdLine()
 
@@ -11,7 +12,7 @@ cmd:option('-classifier', 'nb', 'classifier to use')
 -- ...
 
 
-function main() 
+function main()
    -- Parse input params
    opt = cmd:parse(arg)
    local f = hdf5.open(opt.datafile, 'r')

@@ -12,13 +12,42 @@ import codecs
 
 # Your preprocessing, features construction, and word2vec code.
 
+def char_dict(file_list):
+    char_to_idx = {}
+    idx = 1
+    for filename in file_list:
+        if filename:
+            with codecs.open(filename, 'r', encoding = 'latin-1') as f:
+                remainder = ''
+                while True:
+                    char, space, remainder = remainder.partition(' ')
+                    if space:
+                        # char or space was found
+                        if char != '<space>':
+                            if char not in char_to_idx:
+                                char_to_idx[char] = idx
+                                idx += 1
+                                if not char.isalpha():
+                                    print char
+                                    print filename
+                    else:
+                        next_chunk = f.read(1000)
+                        if next_chunk:
+                            remainder = remainder + next_chunk
+                        else:
+                            break
+    return char_to_idx
+
+def convert_data(filename, char_to_idx, seqlen, nbatch):
+    with codecs.open(filename, 'r', encoding = 'latin-1') as f:
+        
+    return
 
 
 
-FILE_PATHS = {"PTB": ("data/train.tags.txt",
-                      "data/dev.tags.txt",
-                      "data/test.tags.txt",
-                      "data/tags.dict")}
+FILE_PATHS = {"PTB": ("data/train_chars.txt",
+                      "data/valid_chars.txt",
+                      "data/test_chars.txt")}
 args = {}
 
 
@@ -29,9 +58,24 @@ def main(arguments):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('dataset', help="Data set",
                         type=str)
+    parser.add_argument('seqlen', help="Sequence length for backprop", type=int)
+    parser.add_argument('nbatch', help="Number of batches b (for n/b total rows)", type=int)
     args = parser.parse_args(arguments)
     dataset = args.dataset
-    train, valid, test, tag_dict = FILE_PATHS[dataset]
+    seqlen = args.seqlen
+    nbatch = args.nbatch
+    train, valid, test = FILE_PATHS[dataset]
+
+    # Get char dict
+    char_to_idx = char_dict([train, valid, test])
+    nchars = len(char_to_idx.keys())
+
+    # Convert data with n-gram windows
+    train_input, train_output = convert_data(train, char_to_idx, seqlen, nbatch)
+    if valid:
+        valid_input, valid_output = convert_data(valid, char_to_idx)
+    if test:
+        test_input, test_candidates = convert_test_data(test, char_to_idx)
 
     filename = args.dataset + '.hdf5'
     with h5py.File(filename, "w") as f:
