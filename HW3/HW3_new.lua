@@ -18,7 +18,7 @@ function wb(F, i, indices)
 	local n = indices:size()
 	if i > 1 then
 		local Fsum = F[torch.totable(indices[{{n-i+1,n-1}}])]:sum()
-		local Nsum = F[torch.totable(indices[{{n-i+1,n-1}}])]:gt(0):sum()]
+		local Nsum = F[torch.totable(indices[{{n-i+1,n-1}}])]:gt(0):sum()
 		return (F[torch.totable(indices[{{n-i+1,n}}])] + Nsum * wb(F, i-1, indices)) / (Fsum + Nsum)
 	else
 		return F[torch.totable(indices[{{n}}])] / F:sum()
@@ -35,10 +35,10 @@ function normalize(F, n, clf, D)
 	print(indices)
 	indexSum = F[torch.totable(indices[{{1,n-1}}])]:sum()
 	if indexSum > 0 then
-		if clf == 'laplace' or clf == 'ml' then 
+		if clf == 'laplace' or clf == 'ml' then
 			return function() return F[torch.totable(indices)] / indexSum end
 		elseif clf == 'kn' then
-			return function() return (math.max(F[torch.totable(indices)] - D, 0) + D * F[torch.totable(indices[{{1,n-1}}])]:gt(0):sum() * F[torch.totable(indices[{{2,n}}])]:gt(0):sum()) / F[torch.totable(indices[{{2,n-1}}])]:gt(0):sum()) / indexSum end
+			return function() return (math.max(F[torch.totable(indices)] - D, 0) + D * F[torch.totable(indices[{{1,n-1}}])]:gt(0):sum() * F[torch.totable(indices[{{2,n}}])]:gt(0):sum() / F[torch.totable(indices[{{2,n-1}}])]:gt(0):sum()) / indexSum end
 		else
 			return function() return wb(F, n, n, indices) end
 		end
@@ -85,35 +85,35 @@ function NCE_manual(train_input, train_output, din, dhid, epochs, bsize, k)
 		-- Create minibatches
 		local train_input_mb = torch.LongTensor(bsize)
 		local train_output_mb = torch.DoubleTensor(bsize)
-		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}] -- sample batch-size random examples
-
+		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}]
 		for i = 1, bsize do
-			train_input[mb_idx[i]]
-			train_output[mb_idx[i]]
-
-			-- Generate noise samples
-			local noiseIndices = torch.randperm(nsamples)[{{1,k}}]
-			local noiseSamples = torch.LongTensor(k)
-			for j = 1, k do noiseSamples[j] = train_output[noiseIndices[j]] end
-
-			-- Manual SGD
-			local pred = net:forward(train_input[mb_idx[i]]) -- Predictions
-			-- Compute derivative of loss wrt output
-			local lossDerivs = 
-			net:zeroGradParameters()
-			net:backward(train_input, lossDerivs)
-			net:updateParameters(lambda)
+			train_input_mb[i] = train_input[mb_idx[i]]
+			train_output_mb[i] = train_output[mb_idx[i]]
 		end
 
-		-- Compute performance on development set
-		devPred = net:forward(valid_input)
-		devLoss = criterion:forward(devPred, valid_output)
-		print("The loss on the validation set is: " .. devLoss)
-		maxPred, maxIdx = torch.max(devPred, 2)
-		devAcc = torch.eq(maxIdx, valid_output):sum() / valid_output:size()[1]
-		print("The accuracy on the validation set is: " .. devAcc)
-	end
+		-- Generate noise samples
+		local noise_indices = torch.randperm(nsamples)[{{1,k}}]
+		local noise_samples = torch.LongTensor(k)
+		for j = 1, k do noise_samples[j] = train_output[noise_indices[j]] end
+		local all_samples = torch.concat(train_output_mb, noise_samples)
 
+		-- Manual SGD
+		local pred = net:forward(train_input_mb) -- z_score for all nclasses
+
+		-- Compute derivative of loss wrt output
+		local derivs = torch.DoubleTensor(nclasses):fill(0)
+
+		for i = 1, nclasses do
+			if train_output_mb:eq(i):sum() > 0 then -- i.e. if i is one of the true samples
+				derivs[i] = derivs[i] + (1 - torch.sigmoid(pred[i] - torch.log(k * unigram_probs[i])))
+			elseif noise_samples:eq(i):sum() > 0 then -- i is one of noise samples
+				derivs[i] = derivs[i] - torch.sigmoid(pred[i] - torch.log(k * unigram_probs[i]))
+			end
+		end
+		net:zeroGradParameters()
+		net:backward(train_input, derivs)
+		net:updateParameters(lambda)
+	end
 end
 
 function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
@@ -139,7 +139,7 @@ function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
 	local loss_net = nn.Sequential()
 	local add_k_prob = nn.Add(bsize + k, true)
 	loss_net:add(add_k_prob):add(nn.Sigmoid())
-	
+
 
 	-- Train network
 	for t = 1, epochs do
@@ -172,7 +172,7 @@ function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
 		local derivs = torch.DoubleTensor(bsize + k):fill(0)
 		local all_samples = torch.cat(train_output_mb, noise_samples)
 		for i = 1, bsize do
-			pred[i]:map(all_samples, function(z, w) 
+			pred[i]:map(all_samples, function(z, w)
 				return torch.sigmoid(z - torch.log(k*unigram_probs[w]))
 			end)
 			local criterion = nn.ClassNLLCriterion()
@@ -197,7 +197,7 @@ function NCE_network(train_input, train_output, din, dhid, epochs, bsize, k)
 end
 
 
-function main() 
+function main()
    	-- Parse input params
    	opt = cmd:parse(arg)
 	local f = hdf5.open(opt.datafile, 'r')
