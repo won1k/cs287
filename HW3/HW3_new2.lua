@@ -96,29 +96,30 @@ function NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lam
 
 	-- SGD training
 	for t = 1, epochs do
+		print(t)
 		-- Create minibatches
 		local train_input_mb = torch.LongTensor(bsize, contextSize)
 		local train_output_mb = torch.LongTensor(bsize)
-		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}] -- sample batch-size random examples
+		local mb_idx = torch.randperm(nsamples) -- randomly permute indices
 
-		for i = 1, bsize do
-			train_input_mb[i] = train_input[mb_idx[i]]
-			train_output_mb[i] = train_output[mb_idx[i]]
+		for j = 1, torch.floor(nsamples / bsize) + 1 do
+			local train_input_mb = train_input[{{ (j-1) * bsize + 1, math.min(j * bsize, nsamples) }}]
+			local train_output_mb = train_output[{{ (j-1) * bsize + 1, math.min(j * bsize, nsamples) }}]
+
+			-- Manual SGD
+			criterion:forward(net:forward(train_input_mb), train_output_mb)
+			net:zeroGradParameters()
+			net:backward(train_input_mb, criterion:backward(net.output, train_output_mb))
+			net:updateParameters(lambda)
 		end
 
-		-- Manual SGD
-		criterion:forward(net:forward(train_input_mb), train_output_mb)
-		net:zeroGradParameters()
-		net:backward(train_input_mb, criterion:backward(net.output, train_output_mb))
-		net:updateParameters(lambda)
-
 		-- Compute performance on development set
-		devPred = net:forward(valid_input)
-		devLoss = criterion:forward(devPred, valid_output)
-		print("The loss on the validation set is: " .. devLoss)
-		maxPred, maxIdx = torch.max(devPred, 2)
-		devAcc = torch.eq(maxIdx, valid_output):sum() / valid_output:size()[1]
-		print("The accuracy on the validation set is: " .. devAcc)
+		--devPred = net:forward(valid_input)
+		--devLoss = criterion:forward(devPred, valid_output)
+		--print("The loss on the validation set is: " .. devLoss)
+		--maxPred, maxIdx = torch.max(devPred, 2)
+		--devAcc = torch.eq(maxIdx, valid_output):sum() / valid_output:size()[1]
+		--print("The accuracy on the validation set is: " .. devAcc)
 	end
 end
 
@@ -138,40 +139,40 @@ function NCE_manual(train_input, train_output, nclasses, din, dhid, epochs, bsiz
 	-- Train network
 	for t = 1, epochs do
 		print(t)
-		
+
 		-- Create minibatches
-		local train_input_mb = torch.LongTensor(bsize, dwin)
-		local train_output_mb = torch.LongTensor(bsize)
 		local mb_idx = torch.randperm(nsamples)[{{1,bsize}}]
-		for i = 1, bsize do
-			train_input_mb[i] = train_input[mb_idx[i]]
-			train_output_mb[i] = train_output[mb_idx[i]]
-		end
 
-		-- Generate noise samples
-		local noise_indices = torch.randperm(nsamples)[{{1,k}}]
-		local noise_samples = torch.LongTensor(k)
-		for j = 1, k do noise_samples[j] = train_output[noise_indices[j]] end
-		local all_samples = torch.cat(train_output_mb, noise_samples)
+		for j = 1, torch.floor(nsamples / bsize) + 1 do
+			local train_input_mb = train_input[{{ (j-1) * bsize + 1, math.min(j * bsize, nsamples) }}]
+			local train_output_mb = train_output[{{ (j-1) * bsize + 1, math.min(j * bsize, nsamples) }}]
+			local batch_size = train_output_mb:size()[1]
 
-		-- Manual SGD
-		local pred = net:forward(train_input_mb) -- z_score for all nclasses
+			-- Generate noise samples
+			local noise_indices = torch.randperm(nsamples)[{{1,k}}]
+			local noise_samples = torch.LongTensor(k)
+			for j = 1, k do noise_samples[j] = train_output[noise_indices[j]] end
+			local all_samples = torch.cat(train_output_mb, noise_samples)
 
-		-- Compute derivative of loss wrt output
-		local derivs = torch.DoubleTensor(bsize, nclasses):fill(0)
+			-- Manual SGD
+			local pred = net:forward(train_input_mb) -- z_score for all nclasses
 
-		for i = 1, bsize do
-			local wordidx = all_samples[i]
-			derivs[i][wordidx] = derivs[i][wordidx] + (1 - torch.sigmoid(pred[i][wordidx] - torch.log(k * unigram_probs[wordidx])))
-			for j = 1, k do
-				local noiseidx = all_samples[bsize + j]
-				derivs[i][noiseidx] = derivs[i][noiseidx] - torch.sigmoid(pred[i][noiseidx] - torch.log(k * unigram_probs[noiseidx]))
+			-- Compute derivative of loss wrt output
+			local derivs = torch.DoubleTensor(batch_size, nclasses):fill(0)
+
+			for i = 1, batch_size do
+				local wordidx = all_samples[i]
+				derivs[i][wordidx] = derivs[i][wordidx] + (1 - torch.sigmoid(pred[i][wordidx] - torch.log(k * unigram_probs[wordidx])))
+				for j = 1, k do
+					local noiseidx = all_samples[batch_size + j]
+					derivs[i][noiseidx] = derivs[i][noiseidx] - torch.sigmoid(pred[i][noiseidx] - torch.log(k * unigram_probs[noiseidx]))
+				end
 			end
-		end
 
-		net:zeroGradParameters()
-		net:backward(train_input_mb, derivs)
-		net:updateParameters(lambda)
+			net:zeroGradParameters()
+			net:backward(train_input_mb, derivs)
+			net:updateParameters(lambda)
+		end
 	end
 
 	return net
