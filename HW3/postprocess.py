@@ -49,12 +49,12 @@ def main(arguments):
 
     # Get most similar words
     print(ltweights)
-    nbrs = NearestNeighbors(10, 1, algorithm = 'brute', metric = metric)
+    nbrs = NearestNeighbors(10, 5, algorithm = 'brute', metric = metric)
     nbrs.fit(ltweights)
     distances, indices = nbrs.kneighbors(ltweights)
     min_dist = [dist[1] for dist in distances]
-    sorted_min_indices = np.argsort(min_dist)[:10] # pick top 10 most similar words
-    for i in range(10):
+    sorted_min_indices = np.argsort(min_dist)[:100] # pick top 10 most similar words
+    for i in range(100):
         print idx_to_word[sorted_min_indices[i] + 1] + " : " + idx_to_word[indices[sorted_min_indices[i]][1]]
 
 if __name__ == '__main__':

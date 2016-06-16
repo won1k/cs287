@@ -15,6 +15,7 @@ import codecs
 def char_dict(file_list):
     char_to_idx = {}
     idx = 1
+    nchars = 0
     for filename in file_list:
         if filename:
             with codecs.open(filename, 'r', encoding = 'latin-1') as f:
@@ -22,26 +23,63 @@ def char_dict(file_list):
                 while True:
                     char, space, remainder = remainder.partition(' ')
                     if space:
-                        # char or space was found
-                        if char != '<space>':
-                            if char not in char_to_idx:
-                                char_to_idx[char] = idx
-                                idx += 1
-                                if not char.isalpha():
-                                    print char
-                                    print filename
+                        if char not in char_to_idx:
+                            char_to_idx[char] = idx
+                            idx += 1
+                        nchars += 1
                     else:
                         next_chunk = f.read(1000)
                         if next_chunk:
                             remainder = remainder + next_chunk
                         else:
                             break
-    return char_to_idx
+    return char_to_idx, nchars + 1
 
-def convert_data(filename, char_to_idx, seqlen, nbatch):
+def convert_data(filename, char_to_idx, nchars, seqlen, bsize):
+    nmatrix = bsize / seqlen # number of matrices per row
+    char_matrix = [[] for i in range(nmatrix)]
+    spaces = []
+
+    # Add padding to ensure bsize | nchars
+    padding = bsize - (nchars % bsize)
+    if padding == bsize:
+        padding_needed = False
+    else:
+        padding_needed = True
+
     with codecs.open(filename, 'r', encoding = 'latin-1') as f:
-        
-    return
+        remainder = f.read(1000)
+        curr_batch = 0
+        mat_row = []
+        while True:
+            char, space, remainder = remainder.partition(' ')
+            if space: # i.e. char or <space> found
+                if char == '<space>':
+                    spaces.append(2)
+                else:
+                    spaces.append(1)
+                if curr_batch < bsize: # i.e. still on same batch (row)
+                    if len(mat_row) < seqlen: # i.e. still in same matrix
+                        mat_row.append(char_to_idx[char])
+                        curr_batch += 1
+                    else: # filled matrix row in last iteration
+                        char_matrix[curr_batch / seqlen - 1].append(mat_row)
+                        mat_row = [char_to_idx[char]]
+                        curr_batch += 1
+                else: # last iteration filled full row of all matrices
+                    char_matrix[curr_batch / seqlen - 1].append(mat_row)
+                    mat_row = [char_to_idx[char]]
+                    curr_batch = 1
+            else:
+                next_chunk = f.read(1000)
+                if next_chunk:
+                    remainder = remainder + next_chunk
+                else:
+                    if padding_needed:
+                        remainder = remainder + ' </s>' * padding
+                        padding_needed = False
+                    break
+    return np.array(char_matrix, dtype = np.int32), np.array(spaces, dtype = np.int32)
 
 
 
@@ -59,19 +97,18 @@ def main(arguments):
     parser.add_argument('dataset', help="Data set",
                         type=str)
     parser.add_argument('seqlen', help="Sequence length for backprop", type=int)
-    parser.add_argument('nbatch', help="Number of batches b (for n/b total rows)", type=int)
+    parser.add_argument('batch_size', help="Size of batch (n/b)", type=int)
     args = parser.parse_args(arguments)
     dataset = args.dataset
     seqlen = args.seqlen
-    nbatch = args.nbatch
+    bsize = args.batch_size
     train, valid, test = FILE_PATHS[dataset]
 
     # Get char dict
-    char_to_idx = char_dict([train, valid, test])
-    nchars = len(char_to_idx.keys())
+    char_to_idx, nchars = char_dict([train, valid, test])
 
     # Convert data with n-gram windows
-    train_input, train_output = convert_data(train, char_to_idx, seqlen, nbatch)
+    train_input, train_output = convert_data(train, char_to_idx, nchars, seqlen, bsize)
     if valid:
         valid_input, valid_output = convert_data(valid, char_to_idx)
     if test:

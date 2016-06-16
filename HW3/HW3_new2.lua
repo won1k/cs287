@@ -121,6 +121,8 @@ function NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lam
 		--devAcc = torch.eq(maxIdx, valid_output):sum() / valid_output:size()[1]
 		--print("The accuracy on the validation set is: " .. devAcc)
 	end
+
+	return net
 end
 
 function NCE_manual(train_input, train_output, nclasses, din, dhid, epochs, bsize, k, lambda)
@@ -292,13 +294,13 @@ function main()
 
     -- Load development data
     valid_input = f:read('valid_input'):all():long()
-	valid_output = f:read('valid_output'):all():long()
+		valid_output = f:read('valid_output'):all():long()
 
     -- Train.
     if clf == 'laplace' or clf == 'ml' or clf == 'kn' then
    		CountBased(train_input, train_output, clf, alpha, D)
    	elseif clf == 'nnlm' then
-   		NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lambda)
+   		net = NNLM(train_input, train_output, nclasses, din, dhid, epochs, bsize, lambda)
    	else
    		net = NCE_manual(train_input, train_output, nclasses, din, dhid, epochs, bsize, k, lambda)
    	end
