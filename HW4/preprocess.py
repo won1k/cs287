@@ -12,6 +12,13 @@ import codecs
 
 # Your preprocessing, features construction, and word2vec code.
 
+def clean_char(char):
+    curr, line, new = char.partition('\n')
+    cleaned = False
+    if line:
+        cleaned = True
+    return curr, line + ' ' + new + ' ', cleaned
+
 def char_dict(file_list):
     char_to_idx = {}
     idx = 1
@@ -22,6 +29,9 @@ def char_dict(file_list):
                 remainder = ''
                 while True:
                     char, space, remainder = remainder.partition(' ')
+                    char, new, cleaned = clean_char(char)
+                    if cleaned:
+                        remainder = new + remainder
                     if space:
                         if char not in char_to_idx:
                             char_to_idx[char] = idx
@@ -39,6 +49,7 @@ def convert_data(filename, char_to_idx, nchars, seqlen, bsize):
     nmatrix = bsize / seqlen # number of matrices per row
     char_matrix = [[] for i in range(nmatrix)]
     spaces = []
+    print nmatrix
 
     # Add padding to ensure bsize | nchars
     padding = bsize - (nchars % bsize)
@@ -79,7 +90,11 @@ def convert_data(filename, char_to_idx, nchars, seqlen, bsize):
                         remainder = remainder + ' </s>' * padding
                         padding_needed = False
                     break
-    return np.array(char_matrix, dtype = np.int32), np.array(spaces, dtype = np.int32)
+    for matrix in char_matrix:
+        for row in matrix:
+            if len(row) != seqlen:
+                print len(row)
+    return np.array(char_matrix), np.array(spaces, dtype = np.int32)
 
 
 
@@ -110,7 +125,7 @@ def main(arguments):
     # Convert data with n-gram windows
     train_input, train_output = convert_data(train, char_to_idx, nchars, seqlen, bsize)
     if valid:
-        valid_input, valid_output = convert_data(valid, char_to_idx)
+        valid_input, valid_output = convert_data(valid, char_to_idx, nchars, seqlen, bsize)
     if test:
         test_input, test_candidates = convert_test_data(test, char_to_idx)
 
