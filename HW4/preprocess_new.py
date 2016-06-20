@@ -22,7 +22,7 @@ def clean_char(char):
         cleaned = True
     return curr, line + ' ' + new + ' ', cleaned
 
-def char_dict(file_list):
+def char_dict(file_list, spaces):
     char_to_idx = {}
     idx = 1
     for filename in file_list:
@@ -31,14 +31,15 @@ def char_dict(file_list):
                 text = f.readline()
                 chars = text.split(' ')
                 for char in chars:
-                    if char == SPACE:
-                        continue
-                    elif char not in char_to_idx:
+                    if spaces == 0:
+                        if char == SPACE:
+                            continue
+                    if char not in char_to_idx:
                         char_to_idx[char] = idx
                         idx += 1
     return char_to_idx
 
-def convert_data(filename, char_to_idx, bsize):
+def convert_data(filename, char_to_idx, bsize, spaces):
     char_matrix = []
     space_matrix = []
     with codecs.open(filename, 'r', encoding = 'latin-1') as f:
@@ -46,8 +47,9 @@ def convert_data(filename, char_to_idx, bsize):
         char_row = []
         space_row = []
         for idx, char in enumerate(chars):
-            if char == SPACE:
-                continue
+            if spaces == 0:
+                if char == SPACE:
+                    continue
 
             char_row.append(char_to_idx[char])
             try:
@@ -60,7 +62,7 @@ def convert_data(filename, char_to_idx, bsize):
                 char_row = []
                 space_matrix.append(space_row)
                 space_row = []
-                
+
         curr_len = len(char_row)
         if curr_len > 0 and curr_len < bsize: # i.e. need padding
             char_row += [char_to_idx[EOF]] * (bsize - curr_len)
@@ -91,22 +93,24 @@ def main(arguments):
                         type=str)
     parser.add_argument('seqlen', help="Sequence length for backprop", type=int)
     parser.add_argument('batch_size', help="Size of batch (n/b)", type=int)
+    parser.add_argument('spaces', help="Use space in train/valid (1 if true, 0 if false)", type=int)
     args = parser.parse_args(arguments)
     dataset = args.dataset
     seqlen = args.seqlen
     bsize = args.batch_size
+    spaces = args.spaces
     train, valid, test = FILE_PATHS[dataset]
 
     # Get char dict
-    char_to_idx = char_dict([train, valid, test])
+    char_to_idx = char_dict([train, valid, test], spaces)
     nfeatures = len(char_to_idx.keys())
 
     # Convert data with n-gram windows
-    train_input, train_output = convert_data(train, char_to_idx, bsize)
+    train_input, train_output = convert_data(train, char_to_idx, bsize, spaces)
     if valid:
-        valid_input, valid_output = convert_data(valid, char_to_idx, bsize)
+        valid_input, valid_output = convert_data(valid, char_to_idx, bsize, spaces)
     if test:
-        test_input, test_output = convert_data(test, char_to_idx, bsize)
+        test_input, test_output = convert_data(test, char_to_idx, bsize, spaces)
 
     filename = args.dataset + '.hdf5'
     with h5py.File(filename, "w") as f:
